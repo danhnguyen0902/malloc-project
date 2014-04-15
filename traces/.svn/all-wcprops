@@ -1,0 +1,83 @@
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces
+END
+expr-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 70
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/expr-bal.rep
+END
+random-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/random-bal.rep
+END
+short1-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/short1-bal.rep
+END
+realloc-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/realloc-bal.rep
+END
+short2-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/short2-bal.rep
+END
+random2-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/random2-bal.rep
+END
+realloc2-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 74
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/realloc2-bal.rep
+END
+binary-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/binary-bal.rep
+END
+binary2-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/binary2-bal.rep
+END
+coalescing-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 76
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/coalescing-bal.rep
+END
+cp-decl-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/cp-decl-bal.rep
+END
+cccp-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 70
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/cccp-bal.rep
+END
+amptjp-bal.rep
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/cs3214/!svn/ver/31161/spring14/group414/malloclab/traces/amptjp-bal.rep
+END

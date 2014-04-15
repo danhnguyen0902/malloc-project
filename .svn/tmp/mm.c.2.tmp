@@ -1,0 +1,760 @@
+/*
+ * mm-naive.c - The fastest, least memory-efficient malloc package.
+ * 
+ * This solution used a binary search tree and the best fit strategy to maximize both space
+ * utilization and throughput. Each free block's size is at least 32 bytes and is wrapped 
+ * in a 4-byte header and a 4-byte footer. Header and footer entries consist of the block 
+ * size (all 32 bits) and allocation bit (last bit). 
+
+ * a free block size = header + footer + the payload
+ * the payload = left + right + parent + friend + the actual data
+ * 
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <unistd.h>
+#include <string.h>
+#include <stddef.h>
+
+#include "mm.h"
+#include "memlib.h"
+#include "config.h"             /* defines ALIGNMENT */
+
+team_t team = {
+    /* Team name */
+    " MONKEYBUZZ",
+    /* First member's full name */
+    " Danh Nguyen ",
+    /* First member's SLO (@cs.vt.edu) email address */
+    " danh0902 ",
+    /* Second member's full name (leave blank if none) */
+    " Marcus Tedesco ",
+    /* Second member's SLO (@cs.vt.edu) email address (leave blank if none) */
+    " mtedesco "
+};
+
+/* Constants */
+#define SWORD 4                 // single word, 4 bytes
+#define DWORD 8                 // double words, 8 bytes
+#define HEADFOOT 8              // header and footer, 8 bytes
+#define MINBLKSIZE 32           // minimum block size needed, 32 bytes
+#define CHUNKSIZE (1 << 12)     // initial heap size (in bytes)
+
+/* Macros */
+#define max(x, y) ((x)>(y) ? (x): (y))  // Maximum value values
+#define min(x, y) ((x)<(y) ? (x): (y))  // Minimum value of 2 values
+
+#define get(bp) (*(size_t *)(bp))                               // Read from the memory that bp points to
+#define put(bp, val) (*(size_t *)(bp) = val)                    // Write to the memory that bp points to
+#define pack(size, alloc) ((size) | (alloc))                    // Set the size and allocated bit of address bp
+#define align_size(size) (((size) + (ALIGNMENT - 1)) & ~0x7)    // Make the block to meet with the 8-byte alignment
+#define get_size(bp) ((get(head(bp))) & ~0x7)                   // Get the size of the block that bp points to
+                                                                
+#define is_allocated(bp) ((get(head(bp))) & 0x1)                // Check whether a block is free or not
+
+/* bp is a pointer that points to the second word of the block */ 
+#define head(bp) ((void *)(bp) - SWORD)                                 // Compute addresses of its head pointers
+#define foot(bp) ((void *)(bp) + (get_size(bp) - HEADFOOT))             // Compute addresses of its foot pointers
+#define set_head(bp, val) (put(head(bp), (int)val))                     //Assign value to the head component of the block that bp points to
+#define set_foot(bp, val) (put(foot(bp), (int)val))                     //Assign value to the foot component of the block that bp points to
+#define prev(bp) ((void *)(bp) - (get(((void *)(bp) - DWORD)) & ~0x7))  // Compute address of the previous block of bp
+#define next(bp) ((void *)(bp) + get_size(bp))                          // Compute address of the next block of bp
+
+/* Operations for the free-block binary search tree */
+#define left(bp) (get((void *)(bp)))
+#define right(bp) (get((void *)(bp) + SWORD))
+#define parent(bp) (get((void *)(bp) + DWORD))
+#define friend(bp) (get((void *)(bp) + 3 * SWORD))
+#define set_left(bp, val) (put((void *)(bp), (int)val))
+#define set_right(bp, val) (put((void *)(bp) + SWORD, (int)val))
+#define set_parent(bp, val) (put((void *)(bp) + DWORD, (int)val))
+#define set_friend(bp, val) (put((void *)(bp) + 3 * SWORD, (int)val))
+
+/* All functions and global variables used in the program */
+/* Functions */
+int mm_init(void);
+void *mm_malloc(size_t size);
+void mm_free(void *bp);
+void *mm_realloc(void *bp, size_t size);
+
+void *coalesce(void *bp);
+void *extend_heap(size_t size);
+void place(void *bp, size_t asize);
+void *find_fit(size_t asize);
+void insert_to_free_BST(void *bp);
+void *insert(void *parent_node, void *node, void *bp);
+void delete_out_of_free_BST(void *bp);
+void delete(void *node, void *bp);
+int mm_check(void);
+
+/* Global variables */
+void *free_BST_root;
+
+/* 
+ * mm_init - initialize the malloc package.
+ */
+int mm_init(void)
+{
+    void *bp;
+
+    /* create the initial empty heap */
+    if ((bp = mem_sbrk(2 * DWORD)) == NULL)
+    {
+        return -1;
+    }
+
+    put(bp, 0);                         // 1st 4 bytes: alignment padding
+    put(bp + SWORD, pack(HEADFOOT, 1)); // 2nd 4 bytes: prologue header
+    put(bp + DWORD, pack(HEADFOOT, 1)); // 3rd 4 bytes: prologue footer
+    put(bp + 3 * SWORD, pack(0, 1));    // last 4 bytes: epilogue header
+    
+    free_BST_root = NULL;
+    
+    /* Extend the empty heap with a free block of CHUNKSIZE bytes */
+    if (extend_heap(align_size(CHUNKSIZE / SWORD)) == NULL)
+    {
+        return -1;
+    }   
+
+    return 0;
+}
+
+/**
+ * Pre-condition: size already includes 8 bytes for header and footer and is aligned
+ * 
+ * Ask the kernel for more momery and extend the heap. Immediate coalesce is carried out right away.
+ */
+void *extend_heap(size_t size)
+{
+    void *bp;
+    
+    if ((int)(bp = mem_sbrk(size)) == -1)
+    {
+        return NULL;
+    }
+
+    /* Initialize free block header/footer and the epilogue header */
+    set_head(bp, pack(size, 0));    // free block header
+    set_foot(bp, pack(size, 0));    // free block footer
+    set_head(next(bp), pack(0, 1)); // epilogue header
+
+    bp = coalesce(bp);
+
+    insert_to_free_BST(bp);
+
+    //mm_check();
+
+    return bp;
+}
+
+/* 
+ * mm_malloc  -  Allocate a block by incrementing the brk pointer.
+ *               Always allocate a block whose size is a multiple of the alignment.
+ */
+void *mm_malloc(size_t size)
+{
+    size_t asize;       /* adjusted block size */
+    size_t extendsize; /* amount to extend heap if no fits are found */
+    void *bp;
+
+    if (size <= 0)
+    {
+        return NULL;        
+    }
+    
+    // Adjust the size to 8-byte alignment
+    asize = align_size(size + HEADFOOT + 16); 
+        
+    // Find the best fit
+    if ((bp = find_fit(asize)) != NULL)
+    {
+        place(bp, asize);
+        return bp;
+    }
+
+    // If we can't find any fit, extend the heap
+    extendsize = max(asize, CHUNKSIZE / SWORD);
+    if ((bp = extend_heap(align_size(extendsize))) == NULL)
+    {
+        return NULL;
+    }
+    place(bp, asize);
+    //mm_check();
+    return bp;
+}
+
+/*
+ * mm_free - Freeing a block does nothing.
+ */
+void mm_free(void *ptr)
+{
+    size_t size = get_size(ptr);
+    
+    set_head(ptr, pack(size, 0));
+    set_foot(ptr, pack(size, 0));
+    
+    insert_to_free_BST(coalesce(ptr));  // immediate coalescing
+
+    //mm_check();
+}
+
+/*
+ * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
+ */
+void *mm_realloc(void *oldptr, size_t size)
+{
+    if (oldptr == NULL)
+    {
+        return mm_malloc(size);
+    }
+    if (size == 0)
+    {
+        mm_free(ptr);
+        return NULL;
+    }
+    if (size < 0)
+    {
+        return NULL;
+    }
+
+    size_t oldsize = get_size(oldptr);
+    size_t newsize = align_size(size + HEADFOOT);
+    
+    if (newsize < oldsize)
+    { 
+        /* if next block is allocated and the remainder is less than the minimum block size*/
+        if (is_allocated(next(oldptr)) && ((oldsize - newsize) < MINBLKSIZE))
+        {
+            set_head(oldptr, pack(oldsize, 1));
+            set_foot(oldptr, pack(oldsize, 1));
+        }
+        else
+        {
+            if (!(is_allocated(next(oldptr))))
+            {
+                oldsize = oldsize + get_size(next(oldptr));
+                delete_out_of_free_BST(next(oldptr));
+            }
+
+            set_head(oldptr, pack(newsize,1));
+            set_foot(oldptr, pack(newsize,1));
+            void *temp = next(ptr);
+            set_head(temp, pack(oldsize - newsize, 0));
+            set_foot(temp, pack(oldsize - newsize, 0));
+            
+            insert_to_free_BST(temp);
+        }
+
+        return ptr;
+    }
+    else 
+    { 
+        size_t prev_alloc = is_allocated(prev(ptr));
+        size_t next_alloc = is_allocated(next(ptr));
+        size_t csize;
+      
+        if ((!next_alloc && ((oldsize + get_size(next(ptr))) >= newsize)) || 
+           (!prev_alloc && ((oldsize + get_size(prev(ptr))) >= newsize)))
+        {
+            void *newptr;
+
+            if (!next_alloc)
+            {
+                csize = oldsize + get_size(next(ptr));
+                delete_out_of_free_BST(next(ptr));
+                
+                newptr = ptr;
+            }
+            else
+            {
+                csize = oldsize + get_size(prev(ptr));
+                delete_out_of_free_BST(prev(ptr));
+                
+                newptr = prev(ptr);
+                memcpy(newptr, ptr, oldsize - HEADFOOT);
+            }
+
+            if((csize-newsize) >= MINBLKSIZE)
+            {
+                set_head(newptr, pack(newsize, 1));
+                set_foot(newptr, pack(newsize, 1));
+                void *temp = next(newptr);
+                set_head(temp,pack(csize - newsize, 0));
+                set_foot(temp,pack(csize-newsize, 0));
+                
+                insert_to_free_BST(temp);
+            }
+            else
+            {
+                set_head(newptr,pack(csize, 1));
+                set_foot(newptr,pack(csize, 1));
+            }
+            
+            return newptr;
+        }
+        else
+        {
+            size_t asize = align_size(size + HEADFOOT);
+            size_t extendsize;
+            void *newptr;
+
+            if ((newptr = find_fit(asize)) == NULL)
+            {
+                extendsize=max(asize,CHUNKSIZE);
+                if (extend_heap(extendsize) == NULL || (newptr = find_fit(asize)) == NULL)
+                {
+                    return NULL;
+                }
+            }
+
+            place(newptr, asize);
+            memcpy( newptr, ptr, oldsize - HEADFOOT);
+            mm_free(ptr);
+
+            return newptr;
+        }
+    }
+    
+    //mm_check();
+}
+
+/*
+ * Merge the current free block to its next and previous blocks (if any)
+ */
+void *coalesce(void *bp)
+{
+    size_t prev_alloc = is_allocated(prev(bp));
+    size_t next_alloc = is_allocated(next(bp));
+    size_t size = get_size(bp);
+
+    if (prev_alloc && next_alloc)         /* Case 1 */
+    {
+        return bp;
+    }    
+    else if (prev_alloc && !next_alloc)   /* Case 2 */
+    { 
+        delete_out_of_free_BST(next(bp));
+
+        size += get_size(next(bp));
+        set_head(bp, pack(size, 0));
+        set_foot(bp, pack(size, 0));      
+    }
+    else if (!prev_alloc && next_alloc)   /* Case 3*/
+    { 
+        delete_out_of_free_BST(prev(bp));
+
+        size += get_size(prev(bp));
+        set_foot(bp, pack(size, 0));
+        set_head(prev(bp), pack(size, 0));
+        bp = prev(bp);
+    }
+    else                                 /* Case 4 */
+    { 
+        delete_out_of_free_BST(next(bp));
+        delete_out_of_free_BST(prev(bp));
+
+        size += get_size(prev(bp)) + get_size(next(bp));
+        set_head(prev(bp), pack(size, 0));
+        set_foot(next(bp), pack(size, 0));
+        bp = prev(bp);
+    }
+
+    return bp;
+}
+
+/**
+ * Pre-condition: size already includes 8 bytes for header and footer and is adjusted
+ *
+ * Find a free block using the best fit strategy
+ */
+ void *find_fit(size_t asize)
+{
+    void *best_fit = NULL;
+    
+    void *temp = free_BST_root;
+    
+    while (temp != NULL)
+    {
+        if (asize <= get_size(temp))
+        {
+            best_fit = temp;
+            temp = (void *)left(temp);
+        }
+        else
+        {
+            temp = (void *)right(temp);
+        }    
+    }
+
+    return best_fit;
+}
+
+/*
+ * Chop up the chosen free block 
+ */
+void place(void *bp, size_t asize)
+{
+    size_t csize = get_size(bp);
+    
+    delete_out_of_free_BST(bp);
+    
+    // If the remainder >= the minimum block size, reserve it for another request
+    if((csize - asize) >= MINBLKSIZE)
+    {
+        set_head(bp, pack(asize, 1));
+        set_foot(bp, pack(asize, 1));
+        
+        bp = next(bp);
+        set_head(bp, pack(csize - asize, 0));
+        set_foot(bp, pack(csize - asize, 0));
+
+        insert_to_free_BST(bp);
+    }
+    else // if not, give them all to the user
+    {
+        set_head(bp, pack(csize, 1));
+        set_foot(bp, pack(csize, 1));
+    }
+}
+
+/* 
+ * Given a sub-BST, return the node with the minimum value found in that tree. 
+ * The entire tree needs not to be searched. 
+ */
+void *min_value_node(void *node)
+{
+    void *current = node;
+ 
+    /* Loop down to find the leftmost leaf */
+    while ((void *)left(current) != NULL)
+    {
+        current = (void *)left(current);
+    }
+ 
+    return current;
+}
+
+/*
+ * Check the special case where bp could be the root
+ */
+void check_helper(void *bp, void *p)
+{
+     /* bp is the root */
+    if (bp == free_BST_root)
+    {
+        free_BST_root = p;                    
+    }
+    else /* bp is not the root */
+    {
+        if (p != NULL)
+        {
+            set_parent(p, parent(bp));            
+        }
+
+        if ((void *)left(parent(bp)) == bp)
+        {
+            set_left(parent(bp), p);                    
+        }
+        else    
+        {
+            set_right(parent(bp), p);                    
+        }
+    }
+}
+
+/*
+ * Insert a node (a free block) into the BST
+ */
+void insert_to_free_BST(void *bp)
+{
+    // If the BST is empty
+    if (free_BST_root == NULL)
+    {
+        free_BST_root = bp;
+        set_left(free_BST_root, NULL);
+        set_right(free_BST_root, NULL);
+        set_parent(free_BST_root, NULL);
+        set_friend(free_BST_root, NULL);
+    
+        return;
+    }
+
+    free_BST_root = insert(NULL, free_BST_root, bp);
+
+}
+
+/*
+ * Insert helper method
+ */
+void *insert(void *parent_node, void *node, void *bp)
+{
+    if (node == NULL)
+    {
+        set_parent(bp, parent_node);
+        set_left(bp, NULL);
+        set_right(bp, NULL);
+        set_friend(bp, NULL);
+    
+        return bp;
+    }
+
+    /* Case 1: size of the block is less than the current node's size */
+    if (get_size(bp) < get_size(node))
+    {
+        set_left(node, insert(node, (void *)left(node), bp));
+
+        return node;
+    }
+    /* Case 2: size of the block is greater than the current node's size */
+    else if (get_size(bp) > get_size(node))
+    {
+        set_right(node, insert(node, (void *)right(node), bp));
+
+        return node;
+    }
+    /* Case 3: they are equal */
+    else
+    {
+        /* There is only one block in the node */
+        if ((void *)friend(node) == NULL)
+        {
+            set_left(bp, node);
+            set_right(bp, 'F');
+            set_friend(bp, NULL);
+            set_friend(node, bp);
+        
+            return node;
+        }
+        else
+        {
+            // The current node is replaced with bp, and it is bp's FRIEND now
+            set_left(bp, left(node));
+            if ((void *)left(node) != NULL)                    
+            {
+                set_parent(left(node), bp);
+            }   
+
+            set_right(bp, right(node));
+            if ((void *)right(node) != NULL)
+            {
+                set_parent(right(node), bp);
+            }
+
+            set_friend(bp, node);
+
+            set_left(node, bp);
+            set_right(node, 'F');
+
+            check_helper(node, bp);       
+
+            return bp;
+        }
+    } 
+}
+
+/*
+ * Remove a node (a free block) out of the BST
+ */
+void delete_out_of_free_BST(void *bp)
+{
+    if (free_BST_root == NULL)
+    {
+        return;
+    }
+
+    delete(free_BST_root, bp);
+}
+
+/*
+ * Delete helper method
+ */
+void delete(void *node, void *bp)
+{
+    if (node == NULL)
+    {
+        return;        
+    }
+ 
+    /* Case 1: size of the block is less than the curent node's size */
+    if (get_size(bp) < get_size(node))
+    {
+        delete((void *)left(node), bp);
+    }
+    /* Case 2: size of the block is greater than the curent node's size */
+    else if (get_size(bp) > get_size(node))
+    {
+        delete((void *)right(node), bp);
+    }
+    /* Case 3: they are equal */
+    else
+    {
+        /* There is only one block in the node */
+        if ((void *)friend(bp) == NULL && right(bp) != 'F')
+        {
+            /* And it has no right child */
+            if ((void *)right(bp) == NULL)
+            {
+                check_helper(bp, (void *)left(bp));
+            }
+            else /* It has a right child */
+            {
+                void *temp = min_value_node((void *)right(bp));
+                
+                if ((void *)left(bp) != NULL)
+                {
+                    set_parent(left(bp), temp);                    
+                }
+
+                if (temp != (void *)right(bp))
+                {
+                    set_parent(right(bp), temp);
+                    if ((void *)right(temp) != NULL)
+                    {
+                        set_parent(right(temp), parent(temp));                        
+                    }
+                    set_left(parent(temp), right(temp));
+
+                    set_right(temp, right(bp));
+                }
+                
+                if (temp != NULL)
+                {
+                    set_parent(temp, parent(bp));
+                }
+                set_left(temp, left(bp));
+                
+                check_helper(bp, temp);
+            }
+        }
+        else /* There are many blocks (friendS) in the node */
+        {
+            /* bp is not the first block in the node, so it can't be the root either */
+            if (right(bp) != 'F')
+            {
+                check_helper(bp, (void *)friend(bp));
+
+                set_left(friend(bp), left(bp));
+                if ((void *)left(bp) != NULL)
+                {
+                    set_parent(left(bp), (void *)friend(bp));                
+                }
+
+                set_right(friend(bp), right(bp));
+                if ((void *)right(bp) != NULL)
+                {
+                    set_parent(right(bp), (void *)friend(bp));                
+                }
+            }
+            else   /* bp is the first block in the node */
+            {
+                /* the node is the root */
+                if (bp == free_BST_root)
+                {
+                    free_BST_root = (void *)friend(bp);
+                }
+                else /* the node is not the root */
+                {
+                    if ((void *)friend(bp) != NULL)
+                    {
+                        set_left(friend(bp), left(bp));
+                    }   
+                    set_friend(left(bp), friend(bp));
+                }
+            }
+        }
+    }
+}
+
+/*
+ * A helper method for the first check in mm_check()
+ */
+int traverse(void *node)
+{    
+    if (node == NULL)
+    {
+        return 0;
+    }
+
+    int result = 0;
+
+    result += traverse((void *)left(node));
+
+    if (is_allocated(node))
+    {
+        printf("ERROR: The free block %p is not marked as free\n", node);
+        result += -1;
+    }
+
+    result += traverse((void *)right(node));
+    
+    return result;
+}
+
+/*
+ * A helper method for the third check in mm_check()
+ */
+int traverse_again(void *node, void *low_heap, void *high_heap)
+{
+    if (node == NULL)
+    {
+        return 0;
+    }
+
+    int result = 0;
+
+    result += traverse_again((void *)left(node), low_heap, high_heap);
+
+    if (node < low_heap || high_heap < node)
+    {
+        printf("ERROR: The free block %p has an invalid memory address\n", node);
+        result += -1;
+    }
+
+    result += traverse_again((void *)right(node), low_heap, high_heap);
+
+    return result;
+}
+
+/*
+ * Heap consistency checker
+ * Check any invariants or consistency conditions that might happen. 
+ * 
+ * Returns a -1 if there is an error, otherwise returns 0 
+ */
+int mm_check(void)
+{
+    int result = 0;
+    void *low_heap =  mem_heap_lo();    // get the pointer to the first byte in the heap
+    void *high_heap =  mem_heap_hi();   // get the pointer to the last byte in the heap
+
+    /* 1. Check whether every block in the free list is marked as free? */
+    result += traverse(free_BST_root);
+
+    /* 2. Check whether there are any contiguous free blocks that somehow escaped coalescing */
+    void *iterator;
+    void *temp;
+
+    // Our heap starts with one-word padding, 2-word prologue block, and one-word header for the 1st free block
+    for (iterator = low_heap + 16; iterator < high_heap; iterator = next(iterator)) 
+    {
+        temp = next(iterator);
+        
+        if (!is_allocated(iterator) && !is_allocated(temp))
+        {
+            printf("ERROR: The two free blocks %p and %p escaped coalescing\n", iterator, temp);
+            result += -1;
+        }
+    }
+
+    /* 3. Check whether the pointers in the BST point to valid free blocks */
+    result += traverse_again(free_BST_root, low_heap, high_heap);
+
+    if (result < 0)
+    {
+        return -1;
+    }
+
+    return 0;
+}
